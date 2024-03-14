@@ -1,0 +1,107 @@
+在处理包含CASE WHEN THEN语法的PostgreSQL SQL语句时，解析器需要能够识别并正确处理这种表达式。JSqlParser库可以解析这类表达式，并将其转换为可遍历和操作的抽象语法树（AST）节点。
+
+以下是一个例子展示如何使用JSqlParser来提取CASE WHEN THEN表达式中的字段：
+
+Java
+import net.sf.jsqlparser.JSQLParserException;
+import net.sf.jsqlparser.parser.CCJSqlParserManager;
+import net.sf.jsqlparser.schema.Column;
+import net.sf.jsqlparser.statement.select.*;
+
+import java.io.StringReader;
+import java.util.ArrayList;
+import java.util.List;
+
+public class SqlFieldExtractor {
+
+    public static List<String> extractFields(String sql) throws JSQLParserException {
+        CCJSqlParserManager parserManager = new CCJSqlParserManager();
+        Select select = (Select) parserManager.parse(new StringReader(sql));
+
+        return extractFieldsFromSelect(select);
+    }
+
+    private static List<String> extractFieldsFromSelect(Select select) {
+        List<String> fieldsList = new ArrayList<>();
+        extractFieldsFromSelectBody(select.getSelectBody(), fieldsList);
+
+        return fieldsList;
+    }
+
+    private static void extractFieldsFromSelectBody(SelectBody selectBody, List<String> fieldsList) {
+        if (selectBody instanceof PlainSelect) {
+            PlainSelect plainSelect = (PlainSelect) selectBody;
+
+            for (SelectItem item : plainSelect.getSelectItems()) {
+                extractFieldsFromSelectItem(item, fieldsList);
+            }
+
+            handleSubQueries(plainSelect, fieldsList);
+        } else if (selectBody instanceof WithItem) {
+            WithItem withItem = (WithItem) selectBody;
+            extractFieldsFromSelect(withItem.getSelectBody());
+        } else if (selectBody instanceof SetOperationList) {
+            // Handle UNION, INTERSECT, EXCEPT operations similarly
+        }
+    }
+
+    private static void extractFieldsFromSelectItem(SelectItem item, List<String> fieldsList) {
+        if (item instanceof SelectExpressionItem) {
+            SelectExpressionItem expressionItem = (SelectExpressionItem) item;
+            Expression expr = expressionItem.getExpression();
+
+            if (expr instanceof Column) {
+                fieldsList.add(((Column) expr).getColumnName());
+            } else if (expr instanceof CaseExpression) {
+                CaseExpression caseExpr = (CaseExpression) expr;
+                processCaseExpression(caseExpr, fieldsList);
+            } else if (expr instanceof Function || expr instanceof SubSelect) {
+                // Process functions and subqueries as needed
+            }
+        } else if (item instanceof AllColumns) {
+            fieldsList.add("*");
+        }
+    }
+
+    private static void processCaseExpression(CaseExpression caseExpr, List<String> fieldsList) {
+        // Process WHEN conditions and results to find columns
+        for (WhenClause whenClause : caseExpr.getWhenClauses()) {
+            Expression condition = whenClause.getCondition();
+            Expression result = whenClause.getResult();
+
+            extractFieldsFromExpression(condition, fieldsList);
+            extractFieldsFromExpression(result, fieldsList);
+        }
+
+        // Process ELSE clause
+        Expression elseExpr = caseExpr.getElseExpression();
+        if (elseExpr != null) {
+            extractFieldsFromExpression(elseExpr, fieldsList);
+        }
+    }
+
+    private static void extractFieldsFromExpression(Expression expr, List<String> fieldsList) {
+        if (expr instanceof Column) {
+            fieldsList.add(((Column) expr).getColumnName());
+        } else if (expr instanceof SubSelect) {
+            extractFieldsFromSelect(((SubSelect) expr).getSelectBody(), fieldsList);
+        } else if (expr instanceof Function) {
+            // Process function arguments recursively
+            for (Expression arg : ((Function) expr).getParameters().getExpressions()) {
+                extractFieldsFromExpression(arg, fieldsList);
+            }
+        }
+    }
+
+    private static void handleSubQueries(PlainSelect plainSelect, List<String> fieldsList) {
+        // Similar to the previous examples, traverse FROM, WHERE, JOIN clauses
+        // looking for SubSelect instances and call extractFieldsFromSelect on them.
+    }
+
+    public static void main(String[] args) throws JSQLParserException {
+        String sql = "SELECT column1, CASE WHEN column2 > 0 THEN column3 ELSE column4 END AS alias FROM table";
+        List<String> fields = extractFields(sql);
+        System.out.println(fields);
+    }
+}
+上述代码展示了如何扩展extractFieldsFromSelectItem方法以处理CASE WHEN THEN表达式。当遇到CaseExpression时，我们遍历其所有WhenClause以及可能存在的ELSE表达式，并从条件和结果中提取字段名。对于嵌套的子查询或函数参数，同样采用递归方式处理。

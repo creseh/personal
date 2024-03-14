@@ -1,0 +1,112 @@
+解析带有子查询的SQL并获取所有字段时，你需要遍历整个抽象语法树（AST），包括主查询和嵌套的所有子查询。这里仍然以JSqlParser为例，给出一个更完整的示例：
+
+Java
+import net.sf.jsqlparser.JSQLParserException;
+import net.sf.jsqlparser.parser.CCJSqlParserManager;
+import net.sf.jsqlparser.schema.Column;
+import net.sf.jsqlparser.statement.select.*;
+
+import java.io.StringReader;
+import java.util.ArrayList;
+import java.util.List;
+
+public class SqlFieldExtractor {
+
+    public static List<String> extractFields(String sql) {
+        CCJSqlParserManager parserManager = new CCJSqlParserManager();
+        Select select;
+        try {
+            select = (Select) parserManager.parse(new StringReader(sql));
+        } catch (JSQLParserException e) {
+            throw new RuntimeException("Failed to parse SQL: " + sql, e);
+        }
+
+        return extractFieldsFromSelect(select);
+    }
+
+    private static List<String> extractFieldsFromSelect(Select select) {
+        List<String> allFields = new ArrayList<>();
+        extractFieldsFromSelectBody(select.getSelectBody(), allFields);
+        return allFields;
+    }
+
+    private static void extractFieldsFromSelectBody(SelectBody selectBody, List<String> fieldsList) {
+        if (selectBody instanceof PlainSelect) {
+            PlainSelect plainSelect = (PlainSelect) selectBody;
+
+            for (SelectItem item : plainSelect.getSelectItems()) {
+                String field = getFieldFromSelectItem(item);
+                if (field != null) {
+                    fieldsList.add(field);
+                }
+            }
+
+            // 检查FROM、WHERE、JOIN等部分的子查询
+            handleSubQueries(plainSelect, fieldsList);
+        } else if (selectBody instanceof WithItem) {
+            WithItem withItem = (WithItem) selectBody;
+            extractFieldsFromSelect(withItem.getSelectBody());
+        } else if (selectBody instanceof SetOperationList) {
+            SetOperationList setOpList = (SetOperationList) selectBody;
+            for (PlainSelect subSelect : setOpList.getPlainSelects()) {
+                extractFieldsFromSelect(subSelect, fieldsList);
+            }
+        }
+    }
+
+    private static void handleSubQueries(PlainSelect plainSelect, List<String> fieldsList) {
+        // FROM子句中的子查询
+        plainSelect.getFromItem().accept(new FromItemVisitorAdapter() {
+            @Override
+            public void visit(SubSelect subSelect) {
+                extractFieldsFromSelect(subSelect.getSelectBody(), fieldsList);
+            }
+        });
+
+        // WHERE、HAVING等条件表达式中的子查询
+        List<Expression> conditions = new ArrayList<>();
+        conditions.add(plainSelect.getWhere());
+        conditions.addAll(plainSelect.getHaving() != null ? Collections.singletonList(plainSelect.getHaving()) : Collections.emptyList());
+        conditions.addAll(plainSelect.getJoins());
+
+        for (Expression condition : conditions) {
+            condition.accept(new ExpressionVisitorAdapter() {
+                @Override
+                public void visit(SubSelect subSelect) {
+                    extractFieldsFromSelect(subSelect.getSelectBody(), fieldsList);
+                }
+            });
+        }
+    }
+
+    private static String getFieldFromSelectItem(SelectItem item) {
+        if (item instanceof SelectExpressionItem) {
+            SelectExpressionItem expressionItem = (SelectExpressionItem) item;
+            Expression expr = expressionItem.getExpression();
+
+            if (expr instanceof Column) {
+                Column column = (Column) expr;
+                return column.getColumnName();
+            } else if (expr instanceof Function || expr instanceof SubSelect) {
+                // 对于函数或子查询，可以返回表达式的字符串形式作为标识
+                return expr.toString();
+            }
+        } else if (item instanceof AllColumns) {
+            // 处理'*'的情况
+            return "*";
+        }
+
+        return null;
+    }
+
+    public static void main(String[] args) {
+        String sql = "SELECT a.column1, (SELECT b.column2 FROM table_b b WHERE ...) AS alias FROM table_a a WHERE EXISTS(SELECT * FROM table_c c WHERE ...)";
+        List<String> fields = extractFields(sql);
+        System.out.println(fields);
+    }
+}
+这段代码首先创建了一个SqlFieldExtractor类来处理SQL语句。在extractFields方法中，我们使用JSqlParser解析SQL，并调用extractFieldsFromSelect方法开始遍历整个查询结构。
+
+extractFieldsFromSelectBody方法会递归地遍历整个查询结构，提取出所有列名以及子查询的字段。对于子查询，我们利用了访问者模式对可能包含子查询的部分进行遍历。
+
+注意，此示例简化了一些逻辑，实际应用中可能需要根据具体需求进一步完善。例如，对于复杂表达式和函数的结果，可能需要特殊处理以便正确表示其含义。同时，对于特定数据库方言如PostgreSQL的一些高级特性，你可能需要做额外的适配工作。
